@@ -3,9 +3,15 @@
 Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
 work instead of supervising coding agents.
 
-[![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
+## This Fork
 
-_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+This branch contains a focused change on top of OpenAI's Symphony repository:
+
+- `f280525` installs Codex in the live E2E worker image with Bun instead of npm.
+- The live E2E Docker image now installs `curl` and `unzip`, sets `BUN_INSTALL=/root/.bun`, adds Bun to `PATH`, installs Bun from `https://bun.sh/install`, and runs `bun add --global @openai/codex`.
+- The change is limited to `elixir/test/support/live_e2e_docker/Dockerfile`.
+
+The intent is to make the live E2E worker image install Codex through the Bun-based path used by this fork while leaving the rest of Symphony unchanged.
 
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
