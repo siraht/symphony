@@ -133,6 +133,9 @@ Notes:
 - `tracker.kind: github` treats `tracker.project_slug` as `owner/repo` and uses workflow labels as
   states. Active labels such as `codex-ready` dispatch work, terminal labels such as `done` prevent
   dispatch, and closed GitHub issues are never dispatched even if they still have an active label.
+- `tracker.lifecycle_comments`, `tracker.lifecycle_pickup_state`, and `tracker.lifecycle_labels`
+  let Symphony mark GitHub issues when Codex starts and when retries are scheduled. Lifecycle labels
+  are regular GitHub labels; Symphony creates missing labels before applying them.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -141,6 +144,11 @@ Notes:
 ```yaml
 tracker:
   api_key: $LINEAR_API_KEY
+  lifecycle_comments: true
+  lifecycle_pickup_state: codex-in-progress
+  lifecycle_labels:
+    running: codex-running
+    retrying: codex-blocked
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:

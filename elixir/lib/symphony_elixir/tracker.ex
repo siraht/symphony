@@ -9,6 +9,8 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
+  @callback add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  @callback remove_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
@@ -29,6 +31,16 @@ defmodule SymphonyElixir.Tracker do
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
     adapter().create_comment(issue_id, body)
+  end
+
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels) do
+    adapter().add_issue_labels(issue_id, labels)
+  end
+
+  @spec remove_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def remove_issue_labels(issue_id, labels) do
+    adapter().remove_issue_labels(issue_id, labels)
   end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}

@@ -349,6 +349,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
+        emit_terminal_lifecycle(issue)
         terminate_running_issue(state, issue.id, true)
 
       !issue_routable_to_worker?(issue) ->
@@ -698,6 +699,7 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        emit_pickup_lifecycle(issue, attempt, worker_host)
 
         running =
           Map.put(state.running, issue.id, %{
@@ -792,6 +794,7 @@ defmodule SymphonyElixir.Orchestrator do
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
     Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
+    emit_retry_lifecycle(issue_id, identifier, next_attempt, delay_ms, error, Map.get(previous_retry, :error))
 
     %{
       state
@@ -853,6 +856,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
+        emit_terminal_lifecycle(issue)
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
         {:noreply, release_issue_claim(state, issue_id)}
 
@@ -898,6 +902,150 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
+  end
+
+  defp emit_pickup_lifecycle(%Issue{id: issue_id, identifier: identifier} = issue, attempt, worker_host) do
+    pickup_state = lifecycle_pickup_state()
+    running_label = lifecycle_label("running")
+    labels_to_clear = lifecycle_labels(["retrying", "blocked", "failed"])
+
+    if is_binary(pickup_state) do
+      tracker_write("update pickup state for #{identifier}", fn ->
+        Tracker.update_issue_state(issue_id, pickup_state)
+      end)
+    end
+
+    if labels_to_clear != [] do
+      tracker_write("clear stale lifecycle labels for #{identifier}", fn ->
+        Tracker.remove_issue_labels(issue_id, labels_to_clear)
+      end)
+    end
+
+    if is_binary(running_label) do
+      tracker_write("add running lifecycle label for #{identifier}", fn ->
+        Tracker.add_issue_labels(issue_id, [running_label])
+      end)
+    end
+
+    if lifecycle_comments?() do
+      tracker_write("comment pickup lifecycle for #{identifier}", fn ->
+        Tracker.create_comment(issue_id, pickup_comment(issue, attempt, worker_host, pickup_state))
+      end)
+    end
+  end
+
+  defp emit_pickup_lifecycle(_issue, _attempt, _worker_host), do: :ok
+
+  defp emit_retry_lifecycle(_issue_id, _identifier, _attempt, _delay_ms, nil, _previous_error), do: :ok
+
+  defp emit_retry_lifecycle(issue_id, identifier, attempt, delay_ms, error, previous_error)
+       when is_binary(issue_id) and is_binary(error) do
+    retry_label = lifecycle_label("retrying") || lifecycle_label("blocked")
+
+    if is_binary(retry_label) do
+      tracker_write("add retry lifecycle label for #{identifier}", fn ->
+        Tracker.add_issue_labels(issue_id, [retry_label])
+      end)
+    end
+
+    if lifecycle_comments?() and error != previous_error do
+      tracker_write("comment retry lifecycle for #{identifier}", fn ->
+        Tracker.create_comment(issue_id, retry_comment(identifier, attempt, delay_ms, error))
+      end)
+    end
+  end
+
+  defp emit_retry_lifecycle(_issue_id, _identifier, _attempt, _delay_ms, _error, _previous_error),
+    do: :ok
+
+  defp emit_terminal_lifecycle(%Issue{id: issue_id, identifier: identifier, state: state}) do
+    labels_to_clear = lifecycle_labels(["running", "retrying", "blocked", "failed"])
+
+    if labels_to_clear != [] do
+      tracker_write("clear lifecycle labels for #{identifier}", fn ->
+        Tracker.remove_issue_labels(issue_id, labels_to_clear)
+      end)
+    end
+
+    if lifecycle_comments?() do
+      tracker_write("comment terminal lifecycle for #{identifier}", fn ->
+        Tracker.create_comment(
+          issue_id,
+          "Symphony noticed this issue reached terminal state `#{state}` and stopped the active Codex run."
+        )
+      end)
+    end
+  end
+
+  defp emit_terminal_lifecycle(_issue), do: :ok
+
+  defp pickup_comment(%Issue{identifier: identifier, title: title}, attempt, worker_host, pickup_state) do
+    [
+      "Symphony picked this issue up and started a Codex run.",
+      "",
+      "- Issue: #{identifier} - #{title}",
+      "- Attempt: #{normalize_retry_attempt(attempt) + 1}",
+      "- Worker: #{worker_host || "local"}",
+      pickup_state && "- State: #{pickup_state}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp retry_comment(identifier, attempt, delay_ms, error) do
+    [
+      "Symphony detected a problem while running Codex and scheduled a retry.",
+      "",
+      "- Issue: #{identifier}",
+      "- Retry attempt: #{attempt}",
+      "- Retry delay: #{delay_ms}ms",
+      "- Reason: #{error}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp lifecycle_comments? do
+    Config.settings!().tracker.lifecycle_comments == true
+  end
+
+  defp lifecycle_pickup_state do
+    Config.settings!().tracker.lifecycle_pickup_state
+    |> normalize_lifecycle_value()
+  end
+
+  defp lifecycle_label(key) do
+    Config.settings!().tracker.lifecycle_labels
+    |> Map.get(key)
+    |> normalize_lifecycle_value()
+  end
+
+  defp lifecycle_labels(keys) when is_list(keys) do
+    keys
+    |> Enum.flat_map(fn key ->
+      case lifecycle_label(key) do
+        label when is_binary(label) -> [label]
+        _ -> []
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp normalize_lifecycle_value(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp normalize_lifecycle_value(_value), do: nil
+
+  defp tracker_write(description, fun) when is_function(fun, 0) do
+    case fun.() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to #{description}: #{inspect(reason)}")
+        :ok
+    end
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do

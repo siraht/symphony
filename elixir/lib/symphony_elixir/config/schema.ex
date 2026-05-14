@@ -52,6 +52,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      field(:lifecycle_comments, :boolean, default: false)
+      field(:lifecycle_pickup_state, :string)
+      field(:lifecycle_labels, :map, default: %{})
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -59,10 +62,42 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :active_states,
+          :terminal_states,
+          :lifecycle_comments,
+          :lifecycle_pickup_state,
+          :lifecycle_labels
+        ],
         empty_values: []
       )
+      |> update_change(:lifecycle_labels, &normalize_lifecycle_labels/1)
     end
+
+    defp normalize_lifecycle_labels(labels) when is_map(labels) do
+      labels
+      |> Enum.reduce(%{}, fn {key, value}, acc ->
+        normalized_key = key |> to_string() |> String.trim()
+
+        cond do
+          normalized_key == "" ->
+            acc
+
+          is_binary(value) and String.trim(value) != "" ->
+            Map.put(acc, normalized_key, String.trim(value))
+
+          true ->
+            acc
+        end
+      end)
+    end
+
+    defp normalize_lifecycle_labels(_labels), do: %{}
   end
 
   defmodule Polling do

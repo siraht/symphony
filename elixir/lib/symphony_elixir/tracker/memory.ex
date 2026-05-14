@@ -41,6 +41,18 @@ defmodule SymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels) when is_list(labels) do
+    send_event({:memory_tracker_add_labels, issue_id, labels})
+    :ok
+  end
+
+  @spec remove_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def remove_issue_labels(issue_id, labels) when is_list(labels) do
+    send_event({:memory_tracker_remove_labels, issue_id, labels})
+    :ok
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     send_event({:memory_tracker_state_update, issue_id, state_name})

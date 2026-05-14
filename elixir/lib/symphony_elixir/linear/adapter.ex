@@ -58,6 +58,12 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(_issue_id, labels) when is_list(labels), do: :ok
+
+  @spec remove_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def remove_issue_labels(_issue_id, labels) when is_list(labels), do: :ok
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do

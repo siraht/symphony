@@ -16,6 +16,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    refute config.tracker.lifecycle_comments
+    assert config.tracker.lifecycle_labels == %{}
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -36,6 +38,17 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_lifecycle_comments: true,
+      tracker_lifecycle_pickup_state: " codex-in-progress ",
+      tracker_lifecycle_labels: %{"running" => " codex-running ", "empty" => " "}
+    )
+
+    config = Config.settings!()
+    assert config.tracker.lifecycle_comments
+    assert config.tracker.lifecycle_pickup_state == " codex-in-progress "
+    assert config.tracker.lifecycle_labels == %{"running" => "codex-running"}
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -598,9 +611,24 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash-initial"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :InitialCrashRetryOrchestrator)
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_memory_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_lifecycle_comments: true,
+      tracker_lifecycle_labels: %{"retrying" => "codex-blocked"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      restore_app_env(:memory_tracker_recipient, previous_memory_recipient)
+
       if Process.alive?(pid) do
         Process.exit(pid, :normal)
       end
@@ -631,6 +659,10 @@ defmodule SymphonyElixir.CoreTest do
              state.retry_attempts[issue_id]
 
     assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_receive {:memory_tracker_add_labels, ^issue_id, ["codex-blocked"]}
+    assert_receive {:memory_tracker_comment, ^issue_id, comment}
+    assert comment =~ "Symphony detected a problem"
+    assert comment =~ "agent exited: :boom"
   end
 
   test "stale retry timer messages do not consume newer retry entries" do

@@ -40,6 +40,55 @@ defmodule SymphonyElixir.GitHub.Adapter do
     end
   end
 
+  @spec add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def add_issue_labels(issue_id, labels) when is_binary(issue_id) and is_list(labels) do
+    labels = normalize_state_names(labels)
+
+    if labels == [] do
+      :ok
+    else
+      with {:ok, config} <- github_config(),
+           :ok <- ensure_labels_exist(config, labels),
+           {:ok, _response} <-
+             request(config, :post, "/repos/#{config.owner}/#{config.repo}/issues/#{issue_id}/labels", %{
+               labels: labels
+             }) do
+        :ok
+      end
+    end
+  end
+
+  @spec remove_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
+  def remove_issue_labels(issue_id, labels) when is_binary(issue_id) and is_list(labels) do
+    with {:ok, config} <- github_config() do
+      labels
+      |> normalize_state_names()
+      |> Enum.reduce_while(:ok, fn label, :ok ->
+        encoded_label = URI.encode(label, &URI.char_unreserved?/1)
+
+        case request(config, :delete, "/repos/#{config.owner}/#{config.repo}/issues/#{issue_id}/labels/#{encoded_label}") do
+          {:ok, _response} -> {:cont, :ok}
+          {:error, {:github_api_status, 404, _response_body}} -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  defp ensure_labels_exist(config, labels) when is_list(labels) do
+    Enum.reduce_while(labels, :ok, fn label, :ok ->
+      case request(config, :post, "/repos/#{config.owner}/#{config.repo}/labels", %{
+             name: label,
+             color: "ededed",
+             description: "Managed by Symphony issue lifecycle automation"
+           }) do
+        {:ok, _response} -> {:cont, :ok}
+        {:error, {:github_api_status, 422, _response_body}} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) when is_binary(issue_id) and is_binary(state_name) do
     tracker = Config.settings!().tracker
