@@ -23,6 +23,7 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+    |> append_tracker_guidance(issue)
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
@@ -61,4 +62,24 @@ defmodule SymphonyElixir.PromptBuilder do
       prompt
     end
   end
+
+  defp append_tracker_guidance(prompt, issue) do
+    case Config.settings!().tracker.kind do
+      "github" -> prompt <> github_tracker_guidance(issue)
+      _ -> prompt
+    end
+  end
+
+  defp github_tracker_guidance(%{id: issue_number}) when is_binary(issue_number) do
+    """
+
+    ## GitHub Tracker Requirements
+
+    - GitHub issue states are workflow labels. Before finishing, remove active labels such as `codex-ready` / `codex-in-progress` by moving the issue to the configured terminal/review label.
+    - When opening a pull request intended to complete this issue, include an auto-closing keyword in the PR body: `Closes ##{issue_number}`. Do not use only `Refs ##{issue_number}` for completion PRs.
+    - If a PR should not close this issue on merge, state that explicitly in the PR body and move the issue to the appropriate non-active label before ending.
+    """
+  end
+
+  defp github_tracker_guidance(_issue), do: ""
 end

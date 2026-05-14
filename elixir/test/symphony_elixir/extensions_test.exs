@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -203,6 +204,80 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+  end
+
+  test "github issue normalization gives closed and terminal states precedence over active labels" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["codex-ready", "codex-in-progress"],
+      tracker_terminal_states: ["human-review", "done", "closed", "canceled", "failed", "stuck"]
+    )
+
+    closed_with_stale_active_label =
+      github_issue(%{
+        "number" => 2,
+        "state" => "closed",
+        "labels" => [%{"name" => "codex-ready"}]
+      })
+
+    normalized =
+      GitHubAdapter.normalize_issue_for_test(
+        closed_with_stale_active_label,
+        ["codex-ready", "codex-in-progress"],
+        ["human-review", "done", "closed", "canceled", "failed", "stuck"]
+      )
+
+    assert normalized.state == "Closed"
+    refute Orchestrator.should_dispatch_issue_for_test(normalized, empty_orchestrator_state())
+
+    open_with_terminal_and_active_labels =
+      github_issue(%{
+        "number" => 3,
+        "state" => "open",
+        "labels" => [%{"name" => "codex-ready"}, %{"name" => "done"}]
+      })
+
+    normalized =
+      GitHubAdapter.normalize_issue_for_test(
+        open_with_terminal_and_active_labels,
+        ["codex-ready", "codex-in-progress"],
+        ["human-review", "done", "closed", "canceled", "failed", "stuck"]
+      )
+
+    assert normalized.state == "done"
+    refute Orchestrator.should_dispatch_issue_for_test(normalized, empty_orchestrator_state())
+  end
+
+  test "dispatch revalidation skips github issues closed after the candidate poll" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["codex-ready"],
+      tracker_terminal_states: ["done", "closed"]
+    )
+
+    candidate =
+      GitHubAdapter.normalize_issue_for_test(
+        github_issue(%{"number" => 4, "state" => "open", "labels" => [%{"name" => "codex-ready"}]}),
+        ["codex-ready"],
+        ["done", "closed"]
+      )
+
+    closed =
+      GitHubAdapter.normalize_issue_for_test(
+        github_issue(%{"number" => 4, "state" => "closed", "labels" => [%{"name" => "codex-ready"}]}),
+        ["codex-ready"],
+        ["done", "closed"]
+      )
+
+    assert candidate.state == "codex-ready"
+    assert closed.state == "Closed"
+
+    assert {:skip, ^closed} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(candidate, fn ["4"] -> {:ok, [closed]} end)
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -681,6 +756,31 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp github_issue(overrides) when is_map(overrides) do
+    Map.merge(
+      %{
+        "number" => 1,
+        "title" => "GitHub issue",
+        "body" => "Issue body",
+        "state" => "open",
+        "html_url" => "https://github.com/owner/repo/issues/1",
+        "labels" => [],
+        "created_at" => "2026-05-14T00:00:00Z",
+        "updated_at" => "2026-05-14T00:00:00Z"
+      },
+      overrides
+    )
+  end
+
+  defp empty_orchestrator_state do
+    %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
   end
 
   defp static_snapshot do

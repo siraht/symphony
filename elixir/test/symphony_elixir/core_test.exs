@@ -786,6 +786,34 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "attempt=3"
   end
 
+  test "prompt builder appends GitHub tracker completion guidance" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["codex-ready", "codex-in-progress"],
+      tracker_terminal_states: ["human-review", "done", "closed"],
+      prompt: "Ticket {{ issue.identifier }}"
+    )
+
+    issue = %Issue{
+      id: "4",
+      identifier: "GH-4",
+      title: "Google Tracking",
+      description: "Install tracking",
+      state: "codex-ready",
+      url: "https://github.com/owner/repo/issues/4",
+      labels: ["codex-ready"]
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Ticket GH-4"
+    assert prompt =~ "GitHub Tracker Requirements"
+    assert prompt =~ "Closes #4"
+    assert prompt =~ "Do not use only `Refs #4`"
+  end
+
   test "prompt builder renders issue datetime fields without crashing" do
     workflow_prompt = "Ticket {{ issue.identifier }} created={{ issue.created_at }} updated={{ issue.updated_at }}"
 
