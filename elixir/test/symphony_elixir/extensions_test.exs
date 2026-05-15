@@ -593,6 +593,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
+             "codex_preflight" => %{
+               "status" => "ok",
+               "checked_at" => "2026-05-15T00:00:00Z",
+               "reason" => nil
+             },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
 
@@ -954,6 +959,7 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
+      codex_preflight: %{status: :ok, checked_at: ~U[2026-05-15 00:00:00Z], reason: nil},
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
   end
