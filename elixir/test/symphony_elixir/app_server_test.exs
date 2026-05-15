@@ -209,9 +209,11 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
             ;;
           3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1002"}}}'
+            ;;
+          4)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1002"}}}'
             printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"delta":"Blocked before making changes. Every local command failed before execution."}}'
             printf '%s\\n' '{"method":"item/agentMessage/delta","params":{"delta":"bwrap:"}}'
