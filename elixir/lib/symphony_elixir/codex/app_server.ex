@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   require Logger
   alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.Linear.Issue
 
   @initialize_id 1
   @thread_start_id 2
@@ -13,6 +14,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   @max_stream_log_bytes 1_000
   @diagnostic_buffer_bytes 12_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
+  @preflight_prompt """
+  Symphony startup preflight.
+
+  Run exactly one local shell command: `pwd`.
+  Then finish with a short confirmation that the command executed.
+  Do not inspect the repository or make file changes.
+  """
 
   @type session :: %{
           port: port(),
@@ -34,6 +42,15 @@ defmodule SymphonyElixir.Codex.AppServer do
       after
         stop_session(session)
       end
+    end
+  end
+
+  @spec preflight(Path.t(), keyword()) :: :ok | {:error, term()}
+  def preflight(workspace_root, opts \\ []) do
+    if Config.settings!().codex.preflight_enabled do
+      run_preflight(workspace_root, opts)
+    else
+      :ok
     end
   end
 
@@ -143,6 +160,39 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
+  end
+
+  defp run_preflight(workspace_root, opts) when is_binary(workspace_root) do
+    preflight_workspace = Path.join(Path.expand(workspace_root), ".symphony-preflight")
+
+    with :ok <- File.mkdir_p(preflight_workspace),
+         {:ok, session} <- start_session(preflight_workspace, opts) do
+      try do
+        case run_turn(session, @preflight_prompt, preflight_issue(), opts) do
+          {:ok, _result} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      after
+        stop_session(session)
+        File.rm_rf(preflight_workspace)
+      end
+    end
+  end
+
+  defp run_preflight(workspace_root, _opts) do
+    {:error, {:invalid_preflight_workspace_root, workspace_root}}
+  end
+
+  defp preflight_issue do
+    %Issue{
+      id: "symphony-preflight",
+      identifier: "SYMPHONY-PREFLIGHT",
+      title: "Codex execution preflight",
+      description: "Verify Codex can execute a local shell command before dispatching tracker work.",
+      state: "preflight",
+      url: nil,
+      labels: []
+    }
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
@@ -396,19 +446,24 @@ defmodule SymphonyElixir.Codex.AppServer do
       {:ok, payload} when is_map(payload) ->
         updated_diagnostic_buffer = update_diagnostic_buffer(diagnostic_buffer, payload_string)
 
-        if codex_sandbox_failure?(updated_diagnostic_buffer) do
-          {:error, {:codex_sandbox_unavailable, codex_sandbox_failure_message()}}
-        else
-          handle_decoded_incoming(
-            port,
-            on_message,
-            payload,
-            payload_string,
-            timeout_ms,
-            updated_diagnostic_buffer,
-            tool_executor,
-            auto_approve_requests
-          )
+        cond do
+          codex_sandbox_failure?(updated_diagnostic_buffer) ->
+            {:error, {:codex_sandbox_unavailable, codex_sandbox_failure_message()}}
+
+          codex_terminal_blocker?(payload, updated_diagnostic_buffer) ->
+            {:error, {:codex_terminal_blocker, codex_terminal_blocker_message()}}
+
+          true ->
+            handle_decoded_incoming(
+              port,
+              on_message,
+              payload,
+              payload_string,
+              timeout_ms,
+              updated_diagnostic_buffer,
+              tool_executor,
+              auto_approve_requests
+            )
         end
 
       {:ok, payload} ->
@@ -563,6 +618,21 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp codex_sandbox_failure_message do
     "Codex shell sandbox failed to initialize loopback networking via bwrap. " <>
       "Configure codex.turn_sandbox_policy with type dangerFullAccess on hosts that cannot run bubblewrap network namespaces, or fix the host's unprivileged namespace/network permissions."
+  end
+
+  defp codex_terminal_blocker?(%{"method" => "turn/completed"}, buffer) when is_binary(buffer) do
+    (String.contains?(buffer, "blocked before") and
+       (String.contains?(buffer, "every local command failed") or
+          String.contains?(buffer, "prevents me from reading files") or
+          String.contains?(buffer, "prevents me from editing"))) or
+      String.contains?(buffer, "suggested: **stuck**") or
+      String.contains?(buffer, "stuck until the runner")
+  end
+
+  defp codex_terminal_blocker?(_payload, _buffer), do: false
+
+  defp codex_terminal_blocker_message do
+    "Codex reported a terminal blocker instead of completing the issue. Symphony is treating this as a failed run so it can be surfaced for human review instead of retried as normal progress."
   end
 
   defp handle_turn_method(

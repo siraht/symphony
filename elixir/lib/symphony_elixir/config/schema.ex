@@ -219,6 +219,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:turn_timeout_ms, :integer, default: 3_600_000)
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:preflight_enabled, :boolean, default: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -233,7 +234,8 @@ defmodule SymphonyElixir.Config.Schema do
           :turn_sandbox_policy,
           :turn_timeout_ms,
           :read_timeout_ms,
-          :stall_timeout_ms
+          :stall_timeout_ms,
+          :preflight_enabled
         ],
         empty_values: []
       )
