@@ -79,6 +79,9 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec sync_issue_completion(String.t()) :: :ok | {:error, term()}
+  def sync_issue_completion(_issue_id), do: :ok
+
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end

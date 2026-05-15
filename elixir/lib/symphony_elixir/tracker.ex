@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Tracker do
   @callback add_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
   @callback remove_issue_labels(String.t(), [String.t()]) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
+  @callback sync_issue_completion(String.t()) :: :ok | {:error, term()}
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues do
@@ -46,6 +47,11 @@ defmodule SymphonyElixir.Tracker do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     adapter().update_issue_state(issue_id, state_name)
+  end
+
+  @spec sync_issue_completion(String.t()) :: :ok | {:error, term()}
+  def sync_issue_completion(issue_id) do
+    adapter().sync_issue_completion(issue_id)
   end
 
   @spec adapter() :: module()

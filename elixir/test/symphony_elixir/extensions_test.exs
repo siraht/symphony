@@ -254,6 +254,144 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute Orchestrator.should_dispatch_issue_for_test(normalized, empty_orchestrator_state())
   end
 
+  test "github completion sync moves active issue to terminal state when a merged closing PR exists" do
+    previous_req_options = Application.get_env(:symphony_elixir, :github_req_options)
+
+    on_exit(fn ->
+      restore_application_env(:github_req_options, previous_req_options)
+    end)
+
+    stub_name = Module.concat(__MODULE__, :GitHubCompletionSyncStub)
+    parent = self()
+
+    Req.Test.stub(stub_name, fn conn ->
+      send(parent, {:github_request, conn.method, conn.request_path, conn.query_string})
+
+      case {conn.method, conn.request_path} do
+        {"GET", "/search/issues"} ->
+          Req.Test.json(conn, %{"total_count" => 1, "items" => [%{"number" => 5}]})
+
+        {"GET", "/repos/owner/repo/issues/4"} ->
+          Req.Test.json(conn, %{
+            "number" => 4,
+            "state" => "open",
+            "labels" => [%{"name" => "codex-in-progress"}]
+          })
+
+        {"PUT", "/repos/owner/repo/issues/4/labels"} ->
+          Req.Test.json(conn, %{"ok" => true})
+
+        {"PATCH", "/repos/owner/repo/issues/4"} ->
+          Req.Test.json(conn, %{"state" => "closed"})
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :github_req_options, plug: {Req.Test, stub_name})
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["codex-ready", "codex-in-progress"],
+      tracker_terminal_states: ["human-review", "done", "closed"]
+    )
+
+    assert :ok = GitHubAdapter.sync_issue_completion("4")
+
+    assert_receive {:github_request, "GET", "/search/issues", search_query}
+    decoded_query = URI.decode_query(search_query)
+    assert decoded_query["q"] =~ "repo:owner/repo"
+    assert decoded_query["q"] =~ "is:pr"
+    assert decoded_query["q"] =~ "is:merged"
+    assert decoded_query["q"] =~ "closes #4"
+
+    assert_receive {:github_request, "GET", "/repos/owner/repo/issues/4", _}
+    assert_receive {:github_request, "PUT", "/repos/owner/repo/issues/4/labels", _}
+    assert_receive {:github_request, "PATCH", "/repos/owner/repo/issues/4", _}
+  end
+
+  test "agent runner asks tracker to sync completion before continuing active issues" do
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    on_exit(fn ->
+      restore_application_env(:memory_tracker_recipient, previous_recipient)
+    end)
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-completion-sync-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-sync"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-sync"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-sync",
+        identifier: "MT-260",
+        title: "Sync completion",
+        description: "Still active after PR merge",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-260",
+        labels: []
+      }
+
+      state_fetcher = fn ["issue-sync"] -> {:ok, [%{issue | state: "Done"}]} end
+
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_receive {:memory_tracker_sync_completion, "issue-sync"}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "dispatch revalidation skips github issues closed after the candidate poll" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "github",
@@ -851,4 +989,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       end
     end
   end
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_application_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

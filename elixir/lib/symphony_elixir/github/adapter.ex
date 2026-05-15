@@ -106,6 +106,23 @@ defmodule SymphonyElixir.GitHub.Adapter do
     end
   end
 
+  @spec sync_issue_completion(String.t()) :: :ok | {:error, term()}
+  def sync_issue_completion(issue_id) when is_binary(issue_id) do
+    tracker = Config.settings!().tracker
+
+    with {:ok, config} <- github_config(),
+         {:ok, completion_state} <- completion_state(tracker) do
+      case merged_closing_pull_request?(config, issue_id) do
+        {:ok, true} -> update_issue_state(issue_id, completion_state)
+        {:ok, false} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :no_completion_state -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp fetch_each_state(config, states) do
     states
     |> Enum.reduce_while({:ok, []}, &fetch_state_reducer(config, states, &1, &2))
@@ -113,6 +130,33 @@ defmodule SymphonyElixir.GitHub.Adapter do
       {:ok, issues} -> {:ok, dedupe_issues(issues)}
       error -> error
     end
+  end
+
+  defp merged_closing_pull_request?(config, issue_id) do
+    issue_id
+    |> closing_search_queries(config)
+    |> Enum.reduce_while({:ok, false}, fn query, {:ok, false} ->
+      path = "/search/issues?" <> URI.encode_query(%{q: query, per_page: 1})
+
+      case request(config, :get, path) do
+        {:ok, %{"total_count" => count}} when is_integer(count) and count > 0 -> {:halt, {:ok, true}}
+        {:ok, _response} -> {:cont, {:ok, false}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp closing_search_queries(issue_id, config) do
+    issue_ref = "##{issue_id}"
+    qualified_ref = "#{config.owner}/#{config.repo}#{issue_ref}"
+
+    ["closes", "close", "closed", "fixes", "fix", "fixed", "resolves", "resolve", "resolved"]
+    |> Enum.flat_map(fn keyword ->
+      [
+        ~s(repo:#{config.owner}/#{config.repo} is:pr is:merged in:body "#{keyword} #{issue_ref}"),
+        ~s(repo:#{config.owner}/#{config.repo} is:pr is:merged in:body "#{keyword} #{qualified_ref}")
+      ]
+    end)
   end
 
   defp fetch_state_reducer(config, states, state, {:ok, acc}) do
@@ -207,6 +251,11 @@ defmodule SymphonyElixir.GitHub.Adapter do
       else
         Keyword.put(request_opts, :json, body)
       end
+
+    request_opts =
+      :symphony_elixir
+      |> Application.get_env(:github_req_options, [])
+      |> Keyword.merge(request_opts)
 
     case Req.request(request_opts) do
       {:ok, %{status: status, body: response_body}} when status in 200..299 -> {:ok, response_body}
@@ -304,6 +353,19 @@ defmodule SymphonyElixir.GitHub.Adapter do
       true ->
         :ok
     end
+  end
+
+  defp completion_state(tracker) do
+    case preferred_terminal_state(tracker.terminal_states, ["done", "closed"]) do
+      state when is_binary(state) -> {:ok, state}
+      _ -> :no_completion_state
+    end
+  end
+
+  defp preferred_terminal_state(states, preferred_states) when is_list(states) do
+    Enum.find(states, fn state ->
+      Enum.any?(preferred_states, &(normalize_label(state) == &1))
+    end)
   end
 
   defp patch_issue_state(config, issue_id, state) do
