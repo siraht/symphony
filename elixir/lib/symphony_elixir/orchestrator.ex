@@ -480,7 +480,8 @@ defmodule SymphonyElixir.Orchestrator do
       |> terminate_running_issue(issue_id, false)
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
+        error: "stalled for #{elapsed_ms}ms without codex activity",
+        terminal_failure: true
       })
     else
       state
@@ -794,22 +795,30 @@ defmodule SymphonyElixir.Orchestrator do
     error_suffix = if is_binary(error), do: " error=#{error}", else: ""
 
     Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
-    emit_retry_lifecycle(issue_id, identifier, next_attempt, delay_ms, error, Map.get(previous_retry, :error))
 
-    %{
-      state
-      | retry_attempts:
-          Map.put(state.retry_attempts, issue_id, %{
-            attempt: next_attempt,
-            timer_ref: timer_ref,
-            retry_token: retry_token,
-            due_at_ms: due_at_ms,
-            identifier: identifier,
-            error: error,
-            worker_host: worker_host,
-            workspace_path: workspace_path
-          })
-    }
+    if terminal_failure?(metadata, next_attempt) do
+      Process.cancel_timer(timer_ref)
+      Logger.error("Giving up on issue_id=#{issue_id} issue_identifier=#{identifier} after attempt #{next_attempt}#{error_suffix}")
+      emit_failure_lifecycle(issue_id, identifier, next_attempt, error, worker_host, workspace_path)
+      release_issue_claim(state, issue_id)
+    else
+      emit_retry_lifecycle(issue_id, identifier, next_attempt, delay_ms, error, Map.get(previous_retry, :error))
+
+      %{
+        state
+        | retry_attempts:
+            Map.put(state.retry_attempts, issue_id, %{
+              attempt: next_attempt,
+              timer_ref: timer_ref,
+              retry_token: retry_token,
+              due_at_ms: due_at_ms,
+              identifier: identifier,
+              error: error,
+              worker_host: worker_host,
+              workspace_path: workspace_path
+            })
+      }
+    end
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
@@ -908,6 +917,7 @@ defmodule SymphonyElixir.Orchestrator do
     pickup_state = lifecycle_pickup_state()
     running_label = lifecycle_label("running")
     labels_to_clear = lifecycle_labels(["retrying", "blocked", "failed"])
+    already_running? = issue_has_label?(issue, running_label) or issue_state_matches?(issue, pickup_state)
 
     if is_binary(pickup_state) do
       tracker_write("update pickup state for #{identifier}", fn ->
@@ -927,7 +937,7 @@ defmodule SymphonyElixir.Orchestrator do
       end)
     end
 
-    if lifecycle_comments?() do
+    if lifecycle_comments?() and !already_running? and initial_attempt?(attempt) do
       tracker_write("comment pickup lifecycle for #{identifier}", fn ->
         Tracker.create_comment(issue_id, pickup_comment(issue, attempt, worker_host, pickup_state))
       end)
@@ -956,6 +966,43 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp emit_retry_lifecycle(_issue_id, _identifier, _attempt, _delay_ms, _error, _previous_error),
+    do: :ok
+
+  defp emit_failure_lifecycle(issue_id, identifier, attempt, error, worker_host, workspace_path)
+       when is_binary(issue_id) do
+    failure_state = lifecycle_failure_state()
+    failed_label = lifecycle_label("failed")
+    labels_to_clear = lifecycle_labels(["running", "retrying", "blocked"])
+
+    if is_binary(failure_state) do
+      tracker_write("move #{identifier} to failure state", fn ->
+        Tracker.update_issue_state(issue_id, failure_state)
+      end)
+    end
+
+    if labels_to_clear != [] do
+      tracker_write("clear running lifecycle labels for #{identifier}", fn ->
+        Tracker.remove_issue_labels(issue_id, labels_to_clear)
+      end)
+    end
+
+    if is_binary(failed_label) do
+      tracker_write("add failed lifecycle label for #{identifier}", fn ->
+        Tracker.add_issue_labels(issue_id, [failed_label])
+      end)
+    end
+
+    if lifecycle_comments?() do
+      tracker_write("comment failure lifecycle for #{identifier}", fn ->
+        Tracker.create_comment(
+          issue_id,
+          failure_comment(identifier, attempt, error, failure_state, worker_host, workspace_path)
+        )
+      end)
+    end
+  end
+
+  defp emit_failure_lifecycle(_issue_id, _identifier, _attempt, _error, _worker_host, _workspace_path),
     do: :ok
 
   defp emit_terminal_lifecycle(%Issue{id: issue_id, identifier: identifier, state: state}) do
@@ -1004,6 +1051,23 @@ defmodule SymphonyElixir.Orchestrator do
     |> Enum.join("\n")
   end
 
+  defp failure_comment(identifier, attempt, error, failure_state, worker_host, workspace_path) do
+    [
+      "Symphony stopped retrying this issue because Codex did not make progress.",
+      "",
+      "- Issue: #{identifier}",
+      "- Final attempt: #{attempt}",
+      "- Reason: #{error || "unknown"}",
+      failure_state && "- State: #{failure_state}",
+      "- Worker: #{worker_host || "local"}",
+      workspace_path && "- Workspace: #{workspace_path}",
+      "",
+      "This needs human review before Symphony should try it again."
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
   defp lifecycle_comments? do
     Config.settings!().tracker.lifecycle_comments == true
   end
@@ -1011,6 +1075,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp lifecycle_pickup_state do
     Config.settings!().tracker.lifecycle_pickup_state
     |> normalize_lifecycle_value()
+  end
+
+  defp lifecycle_failure_state do
+    configured =
+      Config.settings!().tracker.lifecycle_failure_state
+      |> normalize_lifecycle_value()
+
+    configured || preferred_terminal_state(["stuck", "failed", "human-review"])
   end
 
   defp lifecycle_label(key) do
@@ -1047,6 +1119,34 @@ defmodule SymphonyElixir.Orchestrator do
         :ok
     end
   end
+
+  defp terminal_failure?(metadata, attempt) when is_map(metadata) and is_integer(attempt) do
+    metadata[:terminal_failure] == true or attempt >= Config.settings!().agent.max_retry_attempts
+  end
+
+  defp terminal_failure?(_metadata, _attempt), do: false
+
+  defp preferred_terminal_state(preferred_states) when is_list(preferred_states) do
+    terminal_states = Config.settings!().tracker.terminal_states
+
+    Enum.find(terminal_states, fn terminal_state ->
+      Enum.any?(preferred_states, &(normalize_issue_state(terminal_state) == &1))
+    end) || List.first(terminal_states)
+  end
+
+  defp initial_attempt?(attempt), do: normalize_retry_attempt(attempt) == 0
+
+  defp issue_has_label?(%Issue{labels: labels}, label) when is_list(labels) and is_binary(label) do
+    Enum.any?(labels, &(normalize_issue_state(&1) == normalize_issue_state(label)))
+  end
+
+  defp issue_has_label?(_issue, _label), do: false
+
+  defp issue_state_matches?(%Issue{state: state}, expected) when is_binary(state) and is_binary(expected) do
+    normalize_issue_state(state) == normalize_issue_state(expected)
+  end
+
+  defp issue_state_matches?(_issue, _expected), do: false
 
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and

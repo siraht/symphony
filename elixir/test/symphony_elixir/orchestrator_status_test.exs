@@ -897,7 +897,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert next_poll_in_ms <= 50
   end
 
-  test "orchestrator restarts stalled workers with retry backoff" do
+  test "orchestrator stops stalled workers without retrying" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       codex_stall_timeout_ms: 1_000
@@ -947,18 +947,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
-
-    assert %{
-             attempt: 1,
-             due_at_ms: due_at_ms,
-             identifier: "MT-STALL",
-             error: "stalled for " <> _
-           } = state.retry_attempts[issue_id]
-
-    assert is_integer(due_at_ms)
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
-    assert remaining_ms <= 10_500
+    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
   end
 
   test "status dashboard renders offline marker to terminal" do

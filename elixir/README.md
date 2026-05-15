@@ -123,6 +123,9 @@ Notes:
   Symphony validation.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `agent.max_retry_attempts` caps retry loops for failed worker runs. Stalled Codex runs are treated
+  as terminal failures immediately because repeating the same stalled prompt tends to grow context
+  and issue activity without producing code.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
@@ -136,6 +139,9 @@ Notes:
 - `tracker.lifecycle_comments`, `tracker.lifecycle_pickup_state`, and `tracker.lifecycle_labels`
   let Symphony mark GitHub issues when Codex starts and when retries are scheduled. Lifecycle labels
   are regular GitHub labels; Symphony creates missing labels before applying them.
+- `tracker.lifecycle_failure_state` controls which terminal state label Symphony applies when it
+  gives up on a stalled or repeatedly failing issue. When unset, Symphony prefers `stuck`, then
+  `failed`, then `human-review`, then the first configured terminal state.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the

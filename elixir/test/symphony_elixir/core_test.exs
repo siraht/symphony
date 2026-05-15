@@ -17,8 +17,10 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     refute config.tracker.lifecycle_comments
+    assert config.tracker.lifecycle_failure_state == nil
     assert config.tracker.lifecycle_labels == %{}
     assert config.agent.max_turns == 20
+    assert config.agent.max_retry_attempts == 3
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -42,12 +44,14 @@ defmodule SymphonyElixir.CoreTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_lifecycle_comments: true,
       tracker_lifecycle_pickup_state: " codex-in-progress ",
+      tracker_lifecycle_failure_state: " stuck ",
       tracker_lifecycle_labels: %{"running" => " codex-running ", "empty" => " "}
     )
 
     config = Config.settings!()
     assert config.tracker.lifecycle_comments
     assert config.tracker.lifecycle_pickup_state == " codex-in-progress "
+    assert config.tracker.lifecycle_failure_state == " stuck "
     assert config.tracker.lifecycle_labels == %{"running" => "codex-running"}
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
@@ -571,6 +575,9 @@ defmodule SymphonyElixir.CoreTest do
     issue_id = "issue-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CrashRetryOrchestrator)
+
+    write_workflow_file!(Workflow.workflow_file_path(), max_retry_attempts: 4)
+
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
     on_exit(fn ->

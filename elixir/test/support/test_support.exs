@@ -101,6 +101,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           tracker_lifecycle_comments: false,
           tracker_lifecycle_pickup_state: nil,
+          tracker_lifecycle_failure_state: nil,
           tracker_lifecycle_labels: %{},
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
@@ -141,6 +142,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     tracker_lifecycle_comments = Keyword.get(config, :tracker_lifecycle_comments)
     tracker_lifecycle_pickup_state = Keyword.get(config, :tracker_lifecycle_pickup_state)
+    tracker_lifecycle_failure_state = Keyword.get(config, :tracker_lifecycle_failure_state)
     tracker_lifecycle_labels = Keyword.get(config, :tracker_lifecycle_labels)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
@@ -149,6 +151,7 @@ defmodule SymphonyElixir.TestSupport do
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
+    max_retry_attempts = Keyword.get(config, :max_retry_attempts)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
@@ -182,6 +185,7 @@ defmodule SymphonyElixir.TestSupport do
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "  lifecycle_comments: #{yaml_value(tracker_lifecycle_comments)}",
         "  lifecycle_pickup_state: #{yaml_value(tracker_lifecycle_pickup_state)}",
+        "  lifecycle_failure_state: #{yaml_value(tracker_lifecycle_failure_state)}",
         "  lifecycle_labels: #{yaml_value(tracker_lifecycle_labels)}",
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
@@ -192,6 +196,7 @@ defmodule SymphonyElixir.TestSupport do
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
+        "  max_retry_attempts: #{yaml_value(max_retry_attempts)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
