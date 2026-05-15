@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @diagnostic_buffer_bytes 12_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
   @type session :: %{
@@ -332,16 +333,34 @@ defmodule SymphonyElixir.Codex.AppServer do
       on_message,
       Config.settings!().codex.turn_timeout_ms,
       "",
+      "",
       tool_executor,
       auto_approve_requests
     )
   end
 
-  defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do
+  defp receive_loop(
+         port,
+         on_message,
+         timeout_ms,
+         pending_line,
+         diagnostic_buffer,
+         tool_executor,
+         auto_approve_requests
+       ) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests)
+
+        handle_incoming(
+          port,
+          on_message,
+          complete_line,
+          timeout_ms,
+          diagnostic_buffer,
+          tool_executor,
+          auto_approve_requests
+        )
 
       {^port, {:data, {:noeol, chunk}}} ->
         receive_loop(
@@ -349,6 +368,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           on_message,
           timeout_ms,
           pending_line <> to_string(chunk),
+          diagnostic_buffer,
           tool_executor,
           auto_approve_requests
         )
@@ -361,50 +381,35 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do
+  defp handle_incoming(
+         port,
+         on_message,
+         data,
+         timeout_ms,
+         diagnostic_buffer,
+         tool_executor,
+         auto_approve_requests
+       ) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
-      {:ok, %{"method" => "turn/completed"} = payload} ->
-        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        {:ok, :turn_completed}
+      {:ok, payload} when is_map(payload) ->
+        updated_diagnostic_buffer = update_diagnostic_buffer(diagnostic_buffer, payload_string)
 
-      {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_failed,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_failed, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
-        emit_turn_event(
-          on_message,
-          :turn_cancelled,
-          payload,
-          payload_string,
-          port,
-          Map.get(payload, "params")
-        )
-
-        {:error, {:turn_cancelled, Map.get(payload, "params")}}
-
-      {:ok, %{"method" => method} = payload}
-      when is_binary(method) ->
-        handle_turn_method(
-          port,
-          on_message,
-          payload,
-          payload_string,
-          method,
-          timeout_ms,
-          tool_executor,
-          auto_approve_requests
-        )
+        if codex_sandbox_failure?(updated_diagnostic_buffer) do
+          {:error, {:codex_sandbox_unavailable, codex_sandbox_failure_message()}}
+        else
+          handle_decoded_incoming(
+            port,
+            on_message,
+            payload,
+            payload_string,
+            timeout_ms,
+            updated_diagnostic_buffer,
+            tool_executor,
+            auto_approve_requests
+          )
+        end
 
       {:ok, payload} ->
         emit_message(
@@ -417,7 +422,15 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, payload)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          diagnostic_buffer,
+          tool_executor,
+          auto_approve_requests
+        )
 
       {:error, _reason} ->
         log_non_json_stream_line(payload_string, "turn stream")
@@ -434,7 +447,91 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
         end
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          diagnostic_buffer,
+          tool_executor,
+          auto_approve_requests
+        )
+    end
+  end
+
+  defp handle_decoded_incoming(
+         port,
+         on_message,
+         payload,
+         payload_string,
+         timeout_ms,
+         diagnostic_buffer,
+         tool_executor,
+         auto_approve_requests
+       ) do
+    case payload do
+      %{"method" => "turn/completed"} = payload ->
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
+        {:ok, :turn_completed}
+
+      %{"method" => "turn/failed", "params" => _} = payload ->
+        emit_turn_event(
+          on_message,
+          :turn_failed,
+          payload,
+          payload_string,
+          port,
+          Map.get(payload, "params")
+        )
+
+        {:error, {:turn_failed, Map.get(payload, "params")}}
+
+      %{"method" => "turn/cancelled", "params" => _} = payload ->
+        emit_turn_event(
+          on_message,
+          :turn_cancelled,
+          payload,
+          payload_string,
+          port,
+          Map.get(payload, "params")
+        )
+
+        {:error, {:turn_cancelled, Map.get(payload, "params")}}
+
+      %{"method" => method} = payload
+      when is_binary(method) ->
+        handle_turn_method(
+          port,
+          on_message,
+          payload,
+          payload_string,
+          method,
+          timeout_ms,
+          diagnostic_buffer,
+          tool_executor,
+          auto_approve_requests
+        )
+
+      payload ->
+        emit_message(
+          on_message,
+          :other_message,
+          %{
+            payload: payload,
+            raw: payload_string
+          },
+          metadata_from_message(port, payload)
+        )
+
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          diagnostic_buffer,
+          tool_executor,
+          auto_approve_requests
+        )
     end
   end
 
@@ -451,6 +548,23 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
+  defp update_diagnostic_buffer(buffer, payload_string) when is_binary(buffer) do
+    updated = String.downcase(buffer <> "\n" <> payload_string)
+    String.slice(updated, -@diagnostic_buffer_bytes, @diagnostic_buffer_bytes)
+  end
+
+  defp codex_sandbox_failure?(buffer) when is_binary(buffer) do
+    String.contains?(buffer, "bwrap") and
+      String.contains?(buffer, "loopback") and
+      (String.contains?(buffer, "rtm_newaddr") or
+         String.contains?(buffer, "operation not permitted"))
+  end
+
+  defp codex_sandbox_failure_message do
+    "Codex shell sandbox failed to initialize loopback networking via bwrap. " <>
+      "Configure codex.turn_sandbox_policy with type dangerFullAccess on hosts that cannot run bubblewrap network namespaces, or fix the host's unprivileged namespace/network permissions."
+  end
+
   defp handle_turn_method(
          port,
          on_message,
@@ -458,6 +572,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          payload_string,
          method,
          timeout_ms,
+         diagnostic_buffer,
          tool_executor,
          auto_approve_requests
        ) do
@@ -484,7 +599,15 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:turn_input_required, payload}}
 
       :approved ->
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          diagnostic_buffer,
+          tool_executor,
+          auto_approve_requests
+        )
 
       :approval_required ->
         emit_message(
@@ -518,7 +641,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
 
           Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+
+          receive_loop(
+            port,
+            on_message,
+            timeout_ms,
+            "",
+            diagnostic_buffer,
+            tool_executor,
+            auto_approve_requests
+          )
         end
     end
   end
