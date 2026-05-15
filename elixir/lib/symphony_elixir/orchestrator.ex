@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -38,7 +39,8 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      codex_preflight: nil
     ]
   end
 
@@ -65,6 +67,7 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
+    state = run_startup_codex_preflight(state)
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -225,6 +228,7 @@ defmodule SymphonyElixir.Orchestrator do
     state = reconcile_running_issues(state)
 
     with :ok <- Config.validate!(),
+         :ok <- codex_preflight_ready?(state),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
@@ -255,6 +259,10 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
         state
 
+      {:error, {:codex_preflight_failed, reason}} ->
+        Logger.error("Codex preflight failed; dispatch is paused until the runner is restarted with a healthy Codex execution environment: #{inspect(reason)}")
+        state
+
       {:error, :workflow_front_matter_not_a_map} ->
         Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
         state
@@ -271,6 +279,38 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
+
+  defp run_startup_codex_preflight(%State{} = state) do
+    config = Config.settings!()
+
+    if config.codex.preflight_enabled do
+      case AppServer.preflight(config.workspace.root) do
+        :ok ->
+          Logger.info("Codex startup preflight passed")
+          %{state | codex_preflight: %{status: :ok, checked_at: DateTime.utc_now(), reason: nil}}
+
+        {:error, reason} ->
+          Logger.error("Codex startup preflight failed: #{inspect(reason)}")
+
+          %{
+            state
+            | codex_preflight: %{
+                status: :failed,
+                checked_at: DateTime.utc_now(),
+                reason: inspect(reason)
+              }
+          }
+      end
+    else
+      %{state | codex_preflight: %{status: :disabled, checked_at: DateTime.utc_now(), reason: nil}}
+    end
+  end
+
+  defp codex_preflight_ready?(%State{codex_preflight: %{status: :failed, reason: reason}}) do
+    {:error, {:codex_preflight_failed, reason}}
+  end
+
+  defp codex_preflight_ready?(_state), do: :ok
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
@@ -1393,6 +1433,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        codex_totals: state.codex_totals,
+       codex_preflight: Map.get(state, :codex_preflight),
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
          checking?: state.poll_check_in_progress == true,
