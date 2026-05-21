@@ -64,7 +64,7 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+scripts/symphony-run ./WORKFLOW.md
 ```
 
 ## Configuration
@@ -72,10 +72,15 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+scripts/symphony-run /path/to/custom/WORKFLOW.md
 ```
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+
+`scripts/symphony-run` is the preferred local launcher. It rebuilds the escript
+with the pinned `mise` toolchain, starts through `mise exec` so `escript` is on
+`PATH`, and fails fast when workflow environment references such as `GH_TOKEN`
+or `WEBSITE_REPO_URL` are missing.
 
 Optional flags:
 

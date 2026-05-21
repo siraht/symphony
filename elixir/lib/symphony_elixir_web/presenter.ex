@@ -21,6 +21,8 @@ defmodule SymphonyElixirWeb.Presenter do
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           codex_preflight: Map.get(snapshot, :codex_preflight),
+          tracker_health: Map.get(snapshot, :tracker_health),
+          polling: Map.get(snapshot, :polling),
           rate_limits: snapshot.rate_limits
         }
 

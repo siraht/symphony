@@ -251,6 +251,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       )
 
     assert normalized.state == "done"
+    assert normalized.tracker_flags.active_terminal_label_conflict? == true
+    assert normalized.tracker_flags.active_labels == ["codex-ready"]
+    assert normalized.tracker_flags.terminal_labels == ["done"]
     refute Orchestrator.should_dispatch_issue_for_test(normalized, empty_orchestrator_state())
   end
 
@@ -597,6 +600,18 @@ defmodule SymphonyElixir.ExtensionsTest do
                "status" => "ok",
                "checked_at" => "2026-05-15T00:00:00Z",
                "reason" => nil
+             },
+             "tracker_health" => %{
+               "status" => "ok",
+               "checked_at" => "2026-05-15T00:00:01Z",
+               "reason" => nil,
+               "candidate_count" => 2,
+               "repaired_conflicts" => 1
+             },
+             "polling" => %{
+               "checking?" => false,
+               "next_poll_in_ms" => 30_000,
+               "poll_interval_ms" => 30_000
              },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
@@ -960,6 +975,14 @@ defmodule SymphonyElixir.ExtensionsTest do
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
       codex_preflight: %{status: :ok, checked_at: ~U[2026-05-15 00:00:00Z], reason: nil},
+      tracker_health: %{
+        status: :ok,
+        checked_at: ~U[2026-05-15 00:00:01Z],
+        reason: nil,
+        candidate_count: 2,
+        repaired_conflicts: 1
+      },
+      polling: %{checking?: false, next_poll_in_ms: 30_000, poll_interval_ms: 30_000},
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
   end

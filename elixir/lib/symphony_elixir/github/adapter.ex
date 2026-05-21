@@ -267,6 +267,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
   defp normalize_issue(issue, tracker) when is_map(issue) do
     labels = label_names(issue)
     issue_state = github_issue_state(issue, labels, tracker)
+    tracker_flags = github_tracker_flags(issue, labels, tracker)
 
     %Issue{
       id: issue["number"] |> to_string(),
@@ -278,6 +279,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
       branch_name: nil,
       url: issue["html_url"],
       assignee_id: get_in(issue, ["assignee", "login"]),
+      tracker_flags: tracker_flags,
       blocked_by: [],
       labels: labels,
       assigned_to_worker: true,
@@ -287,6 +289,18 @@ defmodule SymphonyElixir.GitHub.Adapter do
   end
 
   defp normalize_issue(_issue, _tracker), do: nil
+
+  defp github_tracker_flags(issue, labels, tracker) do
+    active_labels = matching_state_labels(labels, tracker.active_states)
+    terminal_labels = matching_state_labels(labels, tracker.terminal_states)
+
+    %{
+      github_open?: !github_issue_closed?(issue),
+      active_labels: active_labels,
+      terminal_labels: terminal_labels,
+      active_terminal_label_conflict?: !github_issue_closed?(issue) and active_labels != [] and terminal_labels != []
+    }
+  end
 
   defp github_issue_state(issue, labels, tracker) do
     terminal_label = matching_state_label(labels, tracker.terminal_states)
@@ -319,6 +333,10 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   defp matching_state_label(labels, states) do
     Enum.find(states, fn state -> label_matches_any?(state, labels) end)
+  end
+
+  defp matching_state_labels(labels, states) do
+    Enum.filter(states, fn state -> label_matches_any?(state, labels) end)
   end
 
   defp configured_state_labels(tracker), do: normalize_state_names(tracker.active_states ++ tracker.terminal_states)

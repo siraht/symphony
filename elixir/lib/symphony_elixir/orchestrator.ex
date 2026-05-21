@@ -40,7 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
-      codex_preflight: nil
+      codex_preflight: nil,
+      tracker_health: nil
     ]
   end
 
@@ -63,7 +64,14 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      tracker_health: %{
+        status: :unknown,
+        checked_at: nil,
+        reason: nil,
+        candidate_count: nil,
+        repaired_conflicts: 0
+      }
     }
 
     run_terminal_workspace_cleanup()
@@ -227,56 +235,73 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
-    with :ok <- Config.validate!(),
-         :ok <- codex_preflight_ready?(state),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
-    else
+    case dispatch_readiness(state) do
+      {:ok, issues} ->
+        state = record_tracker_health(state, :ok, nil, %{candidate_count: length(issues), repaired_conflicts: 0})
+
+        if available_slots(state) > 0 do
+          choose_issues(state, issues)
+        else
+          state
+        end
+
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
-        state
+        record_tracker_health(state, :failed, "missing_linear_api_token")
+
+      {:error, :missing_github_token} ->
+        Logger.error("GitHub API token missing in WORKFLOW.md")
+        record_tracker_health(state, :failed, "missing_github_token")
 
       {:error, :missing_linear_project_slug} ->
         Logger.error("Linear project slug missing in WORKFLOW.md")
-        state
+        record_tracker_health(state, :failed, "missing_linear_project_slug")
+
+      {:error, :missing_github_project_slug} ->
+        Logger.error("GitHub project slug missing in WORKFLOW.md")
+        record_tracker_health(state, :failed, "missing_github_project_slug")
 
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
-        state
+        record_tracker_health(state, :failed, "missing_tracker_kind")
 
       {:error, {:unsupported_tracker_kind, kind}} ->
         Logger.error("Unsupported tracker kind in WORKFLOW.md: #{inspect(kind)}")
 
-        state
+        record_tracker_health(state, :failed, "unsupported_tracker_kind: #{inspect(kind)}")
 
       {:error, {:invalid_workflow_config, message}} ->
         Logger.error("Invalid WORKFLOW.md config: #{message}")
-        state
+        record_tracker_health(state, :failed, "invalid_workflow_config: #{message}")
 
       {:error, {:missing_workflow_file, path, reason}} ->
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
-        state
+        record_tracker_health(state, :failed, "missing_workflow_file: #{path}: #{inspect(reason)}")
 
       {:error, {:codex_preflight_failed, reason}} ->
         Logger.error("Codex preflight failed; dispatch is paused until the runner is restarted with a healthy Codex execution environment: #{inspect(reason)}")
-        state
+        record_tracker_health(state, :blocked, "codex_preflight_failed: #{inspect(reason)}")
 
       {:error, :workflow_front_matter_not_a_map} ->
         Logger.error("Failed to parse WORKFLOW.md: workflow front matter must decode to a map")
-        state
+        record_tracker_health(state, :failed, "workflow_front_matter_not_a_map")
 
       {:error, {:workflow_parse_error, reason}} ->
         Logger.error("Failed to parse WORKFLOW.md: #{inspect(reason)}")
-        state
+        record_tracker_health(state, :failed, "workflow_parse_error: #{inspect(reason)}")
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
+        record_tracker_health(state, :failed, inspect(reason))
+    end
+  end
 
-      false ->
-        state
+  defp dispatch_readiness(%State{} = state) do
+    with :ok <- Config.validate!(),
+         :ok <- codex_preflight_ready?(state),
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
+      {:ok, issues}
     end
   end
 
@@ -558,19 +583,34 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
-  defp choose_issues(issues, state) do
+  defp choose_issues(%State{} = state, issues) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
 
     issues
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
-      if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
-      else
-        state_acc
+      case maybe_repair_active_terminal_conflict(issue) do
+        {:ok, %Issue{} = repaired_issue} ->
+          state_acc
+          |> increment_repaired_conflicts()
+          |> dispatch_if_ready(repaired_issue, active_states, terminal_states)
+
+        :skip ->
+          state_acc
+
+        :noop ->
+          dispatch_if_ready(state_acc, issue, active_states, terminal_states)
       end
     end)
+  end
+
+  defp dispatch_if_ready(state, issue, active_states, terminal_states) do
+    if should_dispatch_issue?(issue, state, active_states, terminal_states) do
+      dispatch_issue(state, issue)
+    else
+      state
+    end
   end
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
@@ -609,6 +649,47 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp maybe_repair_active_terminal_conflict(
+         %Issue{
+           id: issue_id,
+           identifier: identifier,
+           tracker_flags: %{
+             active_terminal_label_conflict?: true,
+             active_labels: [active_label | _],
+             terminal_labels: terminal_labels
+           }
+         } = issue
+       )
+       when is_binary(issue_id) and is_list(terminal_labels) do
+    Logger.warning("Repairing active/terminal label conflict for #{issue_context(issue)} active_label=#{active_label} terminal_labels=#{inspect(terminal_labels)}")
+
+    case Tracker.remove_issue_labels(issue_id, terminal_labels) do
+      :ok ->
+        if lifecycle_comments?() do
+          tracker_write("comment label conflict repair for #{identifier}", fn ->
+            Tracker.create_comment(
+              issue_id,
+              label_conflict_repair_comment(identifier, active_label, terminal_labels)
+            )
+          end)
+        end
+
+        {:ok,
+         %{
+           issue
+           | state: active_label,
+             labels: issue.labels -- terminal_labels,
+             tracker_flags: %{issue.tracker_flags | active_terminal_label_conflict?: false, terminal_labels: []}
+         }}
+
+      {:error, reason} ->
+        Logger.warning("Skipping #{issue_context(issue)}; failed to repair active/terminal label conflict: #{inspect(reason)}")
+        :skip
+    end
+  end
+
+  defp maybe_repair_active_terminal_conflict(_issue), do: :noop
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -1166,6 +1247,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminal_failure?(_metadata, _attempt), do: false
 
+  defp label_conflict_repair_comment(identifier, active_label, terminal_labels) do
+    [
+      "Symphony repaired stale workflow labels before starting Codex.",
+      "",
+      "- Issue: #{identifier}",
+      "- Active label kept: #{active_label}",
+      "- Terminal labels removed: #{Enum.join(terminal_labels, ", ")}",
+      "",
+      "The issue was marked ready and terminal at the same time, which would otherwise prevent dispatch."
+    ]
+    |> Enum.join("\n")
+  end
+
   defp preferred_terminal_state(preferred_states) when is_list(preferred_states) do
     terminal_states = Config.settings!().tracker.terminal_states
 
@@ -1434,6 +1528,7 @@ defmodule SymphonyElixir.Orchestrator do
        retrying: retrying,
        codex_totals: state.codex_totals,
        codex_preflight: Map.get(state, :codex_preflight),
+       tracker_health: Map.get(state, :tracker_health),
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
          checking?: state.poll_check_in_progress == true,
@@ -1457,6 +1552,31 @@ defmodule SymphonyElixir.Orchestrator do
        operations: ["poll", "reconcile"]
      }, state}
   end
+
+  defp record_tracker_health(%State{} = state, status, reason, metadata \\ %{}) do
+    health =
+      %{
+        status: status,
+        checked_at: DateTime.utc_now(),
+        reason: reason,
+        candidate_count: Map.get(metadata, :candidate_count),
+        repaired_conflicts: Map.get(metadata, :repaired_conflicts, current_repaired_conflicts(state))
+      }
+
+    %{state | tracker_health: health}
+  end
+
+  defp increment_repaired_conflicts(%State{} = state) do
+    tracker_health = Map.get(state, :tracker_health) || %{}
+    repaired_conflicts = Map.get(tracker_health, :repaired_conflicts, 0)
+    %{state | tracker_health: Map.put(tracker_health, :repaired_conflicts, repaired_conflicts + 1)}
+  end
+
+  defp current_repaired_conflicts(%State{tracker_health: %{repaired_conflicts: count}})
+       when is_integer(count),
+       do: count
+
+  defp current_repaired_conflicts(_state), do: 0
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+workflow_path="${@: -1}"
+if [[ $# -eq 0 || ! -f "$workflow_path" ]]; then
+  workflow_path="./WORKFLOW.md"
+fi
+
+if ! command -v mise >/dev/null 2>&1; then
+  echo "missing mise; install mise or start Symphony from a shell where mise is on PATH" >&2
+  exit 1
+fi
+
+if grep -q '\$GH_TOKEN' "$workflow_path" && [[ -z "${GH_TOKEN:-}" ]]; then
+  if command -v gh >/dev/null 2>&1; then
+    export GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+  fi
+fi
+
+if grep -q '\$GH_TOKEN' "$workflow_path" && [[ -z "${GH_TOKEN:-}" ]]; then
+  echo "workflow requires GH_TOKEN but no token is available; run gh auth login or export GH_TOKEN" >&2
+  exit 1
+fi
+
+if grep -q '\$WEBSITE_REPO_URL' "$workflow_path" && [[ -z "${WEBSITE_REPO_URL:-}" ]]; then
+  workflow_dir="$(cd "$(dirname "$workflow_path")" && pwd)"
+  if git -C "$workflow_dir" remote get-url origin >/dev/null 2>&1; then
+    export WEBSITE_REPO_URL="$(git -C "$workflow_dir" remote get-url origin)"
+  fi
+fi
+
+if grep -q '\$WEBSITE_REPO_URL' "$workflow_path" && [[ -z "${WEBSITE_REPO_URL:-}" ]]; then
+  echo "workflow requires WEBSITE_REPO_URL but it could not be inferred; export WEBSITE_REPO_URL" >&2
+  exit 1
+fi
+
+mise exec -- mix escript.build --force >/dev/null
+exec mise exec -- ./bin/symphony "$@"
