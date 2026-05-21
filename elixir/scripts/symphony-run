@@ -4,22 +4,30 @@ set -euo pipefail
 invocation_cwd="$PWD"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ $# -eq 0 ]]; then
-  workflow_path="$repo_root/WORKFLOW.md"
-  symphony_args=()
-else
-  workflow_path="${@: -1}"
-  symphony_args=("$@")
-fi
+symphony_args=("$@")
+workflow_path="$repo_root/WORKFLOW.md"
+workflow_arg_index=-1
 
-provided_workflow=false
-if [[ -f "$workflow_path" ]]; then
-  provided_workflow=true
-fi
+index=0
+while [[ $index -lt ${#symphony_args[@]} ]]; do
+  arg="${symphony_args[$index]}"
 
-if [[ "$provided_workflow" == false ]]; then
-  workflow_path="$repo_root/WORKFLOW.md"
-fi
+  case "$arg" in
+    --port | --logs-root)
+      index=$((index + 2))
+      ;;
+
+    --*)
+      index=$((index + 1))
+      ;;
+
+    *)
+      workflow_path="$arg"
+      workflow_arg_index=$index
+      index=$((index + 1))
+      ;;
+  esac
+done
 
 if [[ "$workflow_path" != /* ]]; then
   workflow_path="$invocation_cwd/$workflow_path"
@@ -32,8 +40,7 @@ fi
 
 cd "$repo_root"
 
-if [[ "$provided_workflow" == true ]]; then
-  workflow_arg_index=$((${#symphony_args[@]} - 1))
+if [[ $workflow_arg_index -ge 0 ]]; then
   symphony_args[$workflow_arg_index]="$workflow_path"
 fi
 

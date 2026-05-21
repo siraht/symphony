@@ -228,6 +228,72 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
+  test "symphony launcher fails fast for an explicit missing workflow path" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-launcher-missing-path-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(test_root)
+      launcher = Path.expand("scripts/symphony-run", File.cwd!())
+      missing_workflow = Path.join(test_root, "missing.md")
+
+      assert {output, 1} =
+               System.cmd(launcher, ["--port", "4040", missing_workflow],
+                 stderr_to_stdout: true,
+                 env: [{"PATH", System.get_env("PATH", "")}]
+               )
+
+      assert output =~ "workflow file not found: #{missing_workflow}"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "symphony launcher keeps flags without a workflow on the default workflow" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-launcher-default-workflow-#{System.unique_integer([:positive])}"
+      )
+
+    fake_bin = Path.join(test_root, "bin")
+    args_log = Path.join(test_root, "mise-args.log")
+
+    try do
+      File.mkdir_p!(fake_bin)
+
+      fake_mise = Path.join(fake_bin, "mise")
+
+      File.write!(fake_mise, """
+      #!/bin/sh
+      printf '%s\\n' "$*" >> "$MISE_ARGS_LOG"
+      exit 0
+      """)
+
+      File.chmod!(fake_mise, 0o755)
+
+      launcher = Path.expand("scripts/symphony-run", File.cwd!())
+
+      assert {_, 0} =
+               System.cmd(launcher, ["--port", "4040"],
+                 env: [
+                   {"PATH", fake_bin <> ":" <> System.get_env("PATH", "")},
+                   {"MISE_ARGS_LOG", args_log}
+                 ]
+               )
+
+      invocations = args_log |> File.read!() |> String.split("\n", trim: true)
+
+      assert Enum.at(invocations, 0) == "exec -- mix escript.build --force"
+      assert Enum.at(invocations, 1) == "exec -- ./bin/symphony --port 4040"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "tracker delegates to memory and linear adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
