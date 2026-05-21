@@ -79,8 +79,9 @@ If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
 `scripts/symphony-run` is the preferred local launcher. It rebuilds the escript
 with the pinned `mise` toolchain, starts through `mise exec` so `escript` is on
-`PATH`, and fails fast when workflow environment references such as `GH_TOKEN`
-or `WEBSITE_REPO_URL` are missing.
+`PATH`, infers `GH_TOKEN` from `gh auth token` for GitHub workflows when possible,
+and fails fast when workflow environment references such as `GH_TOKEN` or
+`WEBSITE_REPO_URL` are missing.
 
 Optional flags:
 
@@ -137,7 +138,8 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.api_key` reads from `LINEAR_API_KEY` for Linear workflows when unset or when value is
+  `$LINEAR_API_KEY`. GitHub workflows read from `GH_TOKEN`, then `GITHUB_TOKEN`, when unset.
 - `tracker.kind: github` treats `tracker.project_slug` as `owner/repo` and uses workflow labels as
   states. Active labels such as `codex-ready` dispatch work, terminal labels such as `done` prevent
   dispatch, and closed GitHub issues are never dispatched even if they still have an active label.

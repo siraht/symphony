@@ -136,6 +136,41 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "does not accept required headings mentioned in prose" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      This paragraph mentions #### Alternatives but does not define that section.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+      """
+
+      File.write!("body.md", body)
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Missing required heading: #### Alternatives"
+    end)
+  end
+
   test "fails when headings are out of order" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -273,6 +308,47 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "does not truncate a section at an earlier template heading" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      This section discusses a previous heading:
+
+      #### Context
+
+      - The actual summary bullet still belongs to Summary.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+      """
+
+      File.write!("body.md", body)
+
+      output =
+        capture_io(fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end)
+
+      assert output =~ "PR body format OK"
+    end)
+  end
+
   test "fails when heading has no content delimiter" do
     in_temp_repo(fn ->
       write_template!(@template)
@@ -306,6 +382,26 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     in_temp_repo(fn ->
       write_template!(@template)
       File.write!("body.md", @valid_body)
+
+      output =
+        capture_io(fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end)
+
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "passes when heading lines have trailing spaces and CRLF delimiters" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        @valid_body
+        |> String.replace("#### Summary", "#### Summary  ")
+        |> String.replace("\n", "\r\n")
+
+      File.write!("body.md", body)
 
       output =
         capture_io(fn ->

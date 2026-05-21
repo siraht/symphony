@@ -49,13 +49,18 @@ if ! command -v mise >/dev/null 2>&1; then
   exit 1
 fi
 
-if grep -q '\$GH_TOKEN' "$workflow_path" && [[ -z "${GH_TOKEN:-}" ]]; then
+workflow_uses_github_tracker() {
+  grep -Eq '^[[:space:]]*kind:[[:space:]]*"?github"?[[:space:]]*$' "$workflow_path"
+}
+
+if { grep -q '\$GH_TOKEN' "$workflow_path" || workflow_uses_github_tracker; } &&
+  [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
   if command -v gh >/dev/null 2>&1; then
     export GH_TOKEN="$(gh auth token 2>/dev/null || true)"
   fi
 fi
 
-if grep -q '\$GH_TOKEN' "$workflow_path" && [[ -z "${GH_TOKEN:-}" ]]; then
+if grep -q '\$GH_TOKEN' "$workflow_path" && [[ -z "${GH_TOKEN:-}" && -z "${GITHUB_TOKEN:-}" ]]; then
   echo "workflow requires GH_TOKEN but no token is available; run gh auth login or export GH_TOKEN" >&2
   exit 1
 fi

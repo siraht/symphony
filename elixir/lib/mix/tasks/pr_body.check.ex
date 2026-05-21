@@ -169,23 +169,52 @@ defmodule Mix.Tasks.PrBody.Check do
   end
 
   defp heading_position(body, heading) do
-    case :binary.match(body, heading) do
+    case heading_line_match(body, heading) do
       {idx, _len} -> idx
       :nomatch -> :nomatch
     end
   end
 
   defp capture_heading_section(doc, heading, headings) do
-    with {heading_idx, _} <- :binary.match(doc, heading),
-         section_start <- heading_idx + byte_size(heading),
-         true <- section_start + 2 <= byte_size(doc),
-         "\n\n" <- binary_part(doc, section_start, 2) do
-      extract_section_content(doc, section_start + 2, heading, headings)
+    with {heading_idx, heading_len} <- heading_line_match(doc, heading),
+         section_start <- heading_idx + heading_len,
+         {:ok, content_start} <- content_start_after_heading(doc, section_start) do
+      extract_section_content(doc, content_start, heading, headings)
     else
       :nomatch -> nil
-      false -> ""
+      :eof -> ""
       _ -> nil
     end
+  end
+
+  defp heading_line_match(doc, heading) do
+    pattern = Regex.compile!("(?:^|\\n)(#{Regex.escape(heading)}[ \\t]*)(?=\\r?\\n|$)")
+
+    case Regex.run(pattern, doc, return: :index, capture: :all_but_first) do
+      [{idx, len}] -> {idx, len}
+      _ -> :nomatch
+    end
+  end
+
+  defp content_start_after_heading(doc, section_start) do
+    cond do
+      section_start == byte_size(doc) ->
+        :eof
+
+      has_part?(doc, section_start, "\n\n") ->
+        {:ok, section_start + 2}
+
+      has_part?(doc, section_start, "\r\n\r\n") ->
+        {:ok, section_start + 4}
+
+      true ->
+        :invalid_delimiter
+    end
+  end
+
+  defp has_part?(doc, offset, marker) do
+    marker_size = byte_size(marker)
+    offset + marker_size <= byte_size(doc) and binary_part(doc, offset, marker_size) == marker
   end
 
   defp extract_section_content(doc, content_start, heading, headings) do
@@ -199,7 +228,7 @@ defmodule Mix.Tasks.PrBody.Check do
 
   defp next_heading_offset(content, heading, headings) do
     headings_after(heading, headings)
-    |> Enum.map(fn marker -> :binary.match(content, marker) end)
+    |> Enum.map(fn marker -> heading_line_match(content, marker) end)
     |> Enum.filter(&(&1 != :nomatch))
     |> Enum.map(fn {idx, _} -> idx end)
     |> case do
@@ -210,7 +239,7 @@ defmodule Mix.Tasks.PrBody.Check do
 
   defp headings_after(current_heading, headings) do
     headings
-    |> Enum.filter(&(&1 != current_heading))
-    |> Enum.map(&("\n" <> &1))
+    |> Enum.drop_while(&(&1 != current_heading))
+    |> Enum.drop(1)
   end
 end

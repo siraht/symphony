@@ -150,6 +150,37 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
+  test "github api token resolves from GitHub env vars before Linear fallback" do
+    previous_gh_token = System.get_env("GH_TOKEN")
+    previous_github_token = System.get_env("GITHUB_TOKEN")
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+
+    on_exit(fn ->
+      restore_env("GH_TOKEN", previous_gh_token)
+      restore_env("GITHUB_TOKEN", previous_github_token)
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+    end)
+
+    System.put_env("GH_TOKEN", "fallback-gh-token")
+    System.put_env("GITHUB_TOKEN", "fallback-github-token")
+    System.put_env("LINEAR_API_KEY", "wrong-linear-token")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: nil,
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["codex-ready"],
+      tracker_terminal_states: ["done"],
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.api_key == "fallback-gh-token"
+    assert :ok = Config.validate!()
+
+    System.delete_env("GH_TOKEN")
+    assert Config.settings!().tracker.api_key == "fallback-github-token"
+  end
+
   test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
     previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
     env_assignee = "dev@example.com"

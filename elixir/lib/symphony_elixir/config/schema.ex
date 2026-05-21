@@ -415,7 +415,7 @@ defmodule SymphonyElixir.Config.Schema do
   defp finalize_settings(settings) do
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
+      | api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_key_fallback(settings.tracker)),
         assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
     }
 
@@ -432,6 +432,12 @@ defmodule SymphonyElixir.Config.Schema do
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
+
+  defp tracker_api_key_fallback(%Tracker{kind: "github"}) do
+    System.get_env("GH_TOKEN") || System.get_env("GITHUB_TOKEN")
+  end
+
+  defp tracker_api_key_fallback(_tracker), do: System.get_env("LINEAR_API_KEY")
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

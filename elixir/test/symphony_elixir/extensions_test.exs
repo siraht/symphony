@@ -294,6 +294,120 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
+  test "symphony launcher preserves workflow paths with equals-form flags" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-launcher-equals-flags-#{System.unique_integer([:positive])}"
+      )
+
+    fake_bin = Path.join(test_root, "bin")
+    workflow_dir = Path.join(test_root, "project")
+    args_log = Path.join(test_root, "mise-args.log")
+
+    try do
+      File.mkdir_p!(fake_bin)
+      File.mkdir_p!(workflow_dir)
+      File.write!(Path.join(workflow_dir, "WORKFLOW.md"), "---\ntracker:\n  kind: memory\n---\n")
+
+      fake_mise = Path.join(fake_bin, "mise")
+
+      File.write!(fake_mise, """
+      #!/bin/sh
+      printf '%s\\n' "$*" >> "$MISE_ARGS_LOG"
+      exit 0
+      """)
+
+      File.chmod!(fake_mise, 0o755)
+
+      launcher = Path.expand("scripts/symphony-run", File.cwd!())
+
+      assert {_, 0} =
+               System.cmd(launcher, ["--port=4040", "--logs-root=/tmp/symphony-test-logs", "WORKFLOW.md"],
+                 cd: workflow_dir,
+                 env: [
+                   {"PATH", fake_bin <> ":" <> System.get_env("PATH", "")},
+                   {"MISE_ARGS_LOG", args_log}
+                 ]
+               )
+
+      invocations = args_log |> File.read!() |> String.split("\n", trim: true)
+
+      assert Enum.at(invocations, 0) == "exec -- mix escript.build --force"
+
+      assert Enum.at(invocations, 1) ==
+               "exec -- ./bin/symphony --port=4040 --logs-root=/tmp/symphony-test-logs #{Path.join(workflow_dir, "WORKFLOW.md")}"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "symphony launcher infers GH_TOKEN for GitHub tracker workflows" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-launcher-github-token-#{System.unique_integer([:positive])}"
+      )
+
+    fake_bin = Path.join(test_root, "bin")
+    workflow_dir = Path.join(test_root, "project")
+    args_log = Path.join(test_root, "mise-args.log")
+
+    try do
+      File.mkdir_p!(fake_bin)
+      File.mkdir_p!(workflow_dir)
+
+      File.write!(Path.join(workflow_dir, "WORKFLOW.md"), """
+      ---
+      tracker:
+        kind: github
+        project_slug: owner/repo
+      ---
+      """)
+
+      fake_mise = Path.join(fake_bin, "mise")
+      fake_gh = Path.join(fake_bin, "gh")
+
+      File.write!(fake_mise, """
+      #!/bin/sh
+      printf '%s GH_TOKEN=%s\\n' "$*" "$GH_TOKEN" >> "$MISE_ARGS_LOG"
+      exit 0
+      """)
+
+      File.write!(fake_gh, """
+      #!/bin/sh
+      if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
+        printf '%s\\n' fake-gh-token
+        exit 0
+      fi
+      exit 1
+      """)
+
+      File.chmod!(fake_mise, 0o755)
+      File.chmod!(fake_gh, 0o755)
+
+      launcher = Path.expand("scripts/symphony-run", File.cwd!())
+
+      assert {_, 0} =
+               System.cmd(launcher, ["WORKFLOW.md"],
+                 cd: workflow_dir,
+                 env: [
+                   {"PATH", fake_bin <> ":" <> System.get_env("PATH", "")},
+                   {"MISE_ARGS_LOG", args_log},
+                   {"GH_TOKEN", nil},
+                   {"GITHUB_TOKEN", nil}
+                 ]
+               )
+
+      invocations = args_log |> File.read!() |> String.split("\n", trim: true)
+      assert Enum.at(invocations, 0) == "exec -- mix escript.build --force GH_TOKEN=fake-gh-token"
+      assert Enum.at(invocations, 1) =~ "exec -- ./bin/symphony #{Path.join(workflow_dir, "WORKFLOW.md")}"
+      assert Enum.at(invocations, 1) =~ "GH_TOKEN=fake-gh-token"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "tracker delegates to memory and linear adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
