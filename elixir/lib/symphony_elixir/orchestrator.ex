@@ -257,9 +257,9 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear project slug missing in WORKFLOW.md")
         record_tracker_health(state, :failed, "missing_linear_project_slug")
 
-      {:error, :missing_github_project_slug} ->
-        Logger.error("GitHub project slug missing in WORKFLOW.md")
-        record_tracker_health(state, :failed, "missing_github_project_slug")
+      {:error, :missing_github_repo_slug} ->
+        Logger.error("GitHub repo slug missing in WORKFLOW.md")
+        record_tracker_health(state, :failed, "missing_github_repo_slug")
 
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
@@ -679,7 +679,7 @@ defmodule SymphonyElixir.Orchestrator do
          %{
            issue
            | state: active_label,
-             labels: issue.labels -- terminal_labels,
+             labels: remove_matching_labels(issue.labels, terminal_labels),
              tracker_flags: %{issue.tracker_flags | active_terminal_label_conflict?: false, terminal_labels: []}
          }}
 
@@ -690,6 +690,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_repair_active_terminal_conflict(_issue), do: :noop
+
+  defp remove_matching_labels(labels, removable_labels) when is_list(labels) and is_list(removable_labels) do
+    removable =
+      removable_labels
+      |> Enum.map(&normalize_issue_state/1)
+      |> MapSet.new()
+
+    Enum.reject(labels, fn label ->
+      MapSet.member?(removable, normalize_issue_state(label))
+    end)
+  end
+
+  defp remove_matching_labels(labels, _removable_labels), do: labels
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)

@@ -182,6 +182,52 @@ defmodule SymphonyElixir.ExtensionsTest do
     WorkflowStore.force_reload()
   end
 
+  test "symphony launcher preserves caller-relative workflow paths" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-launcher-paths-#{System.unique_integer([:positive])}"
+      )
+
+    fake_bin = Path.join(test_root, "bin")
+    workflow_dir = Path.join(test_root, "project")
+    args_log = Path.join(test_root, "mise-args.log")
+
+    try do
+      File.mkdir_p!(fake_bin)
+      File.mkdir_p!(workflow_dir)
+      File.write!(Path.join(workflow_dir, "WORKFLOW.md"), "---\ntracker:\n  kind: memory\n---\n")
+
+      fake_mise = Path.join(fake_bin, "mise")
+
+      File.write!(fake_mise, """
+      #!/bin/sh
+      printf '%s\\n' "$*" >> "$MISE_ARGS_LOG"
+      exit 0
+      """)
+
+      File.chmod!(fake_mise, 0o755)
+
+      launcher = Path.expand("scripts/symphony-run", File.cwd!())
+
+      assert {_, 0} =
+               System.cmd(launcher, ["--port", "4040", "WORKFLOW.md"],
+                 cd: workflow_dir,
+                 env: [
+                   {"PATH", fake_bin <> ":" <> System.get_env("PATH", "")},
+                   {"MISE_ARGS_LOG", args_log}
+                 ]
+               )
+
+      invocations = args_log |> File.read!() |> String.split("\n", trim: true)
+
+      assert Enum.at(invocations, 0) == "exec -- mix escript.build --force"
+      assert Enum.at(invocations, 1) == "exec -- ./bin/symphony --port 4040 #{Path.join(workflow_dir, "WORKFLOW.md")}"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "tracker delegates to memory and linear adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])

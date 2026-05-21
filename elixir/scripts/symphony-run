@@ -1,12 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+invocation_cwd="$PWD"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ $# -eq 0 ]]; then
+  workflow_path="$repo_root/WORKFLOW.md"
+  symphony_args=()
+else
+  workflow_path="${@: -1}"
+  symphony_args=("$@")
+fi
+
+provided_workflow=false
+if [[ -f "$workflow_path" ]]; then
+  provided_workflow=true
+fi
+
+if [[ "$provided_workflow" == false ]]; then
+  workflow_path="$repo_root/WORKFLOW.md"
+fi
+
+if [[ "$workflow_path" != /* ]]; then
+  workflow_path="$invocation_cwd/$workflow_path"
+fi
+
+if [[ ! -f "$workflow_path" ]]; then
+  echo "workflow file not found: $workflow_path" >&2
+  exit 1
+fi
+
 cd "$repo_root"
 
-workflow_path="${@: -1}"
-if [[ $# -eq 0 || ! -f "$workflow_path" ]]; then
-  workflow_path="./WORKFLOW.md"
+if [[ "$provided_workflow" == true ]]; then
+  workflow_arg_index=$((${#symphony_args[@]} - 1))
+  symphony_args[$workflow_arg_index]="$workflow_path"
 fi
 
 if ! command -v mise >/dev/null 2>&1; then
@@ -38,4 +66,4 @@ if grep -q '\$WEBSITE_REPO_URL' "$workflow_path" && [[ -z "${WEBSITE_REPO_URL:-}
 fi
 
 mise exec -- mix escript.build --force >/dev/null
-exec mise exec -- ./bin/symphony "$@"
+exec mise exec -- ./bin/symphony "${symphony_args[@]}"
