@@ -184,6 +184,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
   defp fetch_issue_id_reducer(config, tracker, issue_id, {:ok, acc}) do
     case request(config, :get, "/repos/#{config.owner}/#{config.repo}/issues/#{issue_id}") do
       {:ok, issue} -> {:cont, {:ok, [normalize_issue(issue, tracker) | acc]}}
+      {:error, {:github_api_status, 404, _response_body}} -> {:cont, {:ok, acc}}
       {:error, reason} -> {:halt, {:error, reason}}
     end
   end

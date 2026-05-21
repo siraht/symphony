@@ -651,6 +651,53 @@ defmodule SymphonyElixir.ExtensionsTest do
              Orchestrator.revalidate_issue_for_dispatch_for_test(candidate, fn ["4"] -> {:ok, [closed]} end)
   end
 
+  test "github issue state fetch skips missing issues without failing the batch" do
+    previous_req_options = Application.get_env(:symphony_elixir, :github_req_options)
+
+    on_exit(fn ->
+      restore_application_env(:github_req_options, previous_req_options)
+    end)
+
+    stub_name = Module.concat(__MODULE__, :GitHubMissingIssueStateStub)
+    parent = self()
+
+    Req.Test.stub(stub_name, fn conn ->
+      send(parent, {:github_request, conn.method, conn.request_path})
+
+      case {conn.method, conn.request_path} do
+        {"GET", "/repos/owner/repo/issues/4"} ->
+          Req.Test.json(conn, %{
+            "number" => 4,
+            "state" => "open",
+            "title" => "Ready issue",
+            "labels" => [%{"name" => "codex-ready"}]
+          })
+
+        {"GET", "/repos/owner/repo/issues/404"} ->
+          conn
+          |> Plug.Conn.put_status(404)
+          |> Req.Test.json(%{"message" => "Not Found"})
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :github_req_options, plug: {Req.Test, stub_name})
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "github-token",
+      tracker_project_slug: "owner/repo",
+      tracker_active_states: ["codex-ready"],
+      tracker_terminal_states: ["done", "closed"]
+    )
+
+    assert {:ok, [issue]} = GitHubAdapter.fetch_issue_states_by_ids(["4", "404"])
+    assert issue.id == "4"
+    assert issue.state == "codex-ready"
+
+    assert_receive {:github_request, "GET", "/repos/owner/repo/issues/4"}
+    assert_receive {:github_request, "GET", "/repos/owner/repo/issues/404"}
+  end
+
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
