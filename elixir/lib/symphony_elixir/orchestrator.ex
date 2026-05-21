@@ -1468,10 +1468,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    if Process.whereis(server) do
-      GenServer.call(server, :request_refresh)
-    else
-      :unavailable
+    with :ok <- ensure_server_available(server) do
+      try do
+        GenServer.call(server, :request_refresh)
+      catch
+        :exit, _ -> :unavailable
+      end
     end
   end
 
@@ -1480,17 +1482,33 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
-      try do
-        GenServer.call(server, :snapshot, timeout)
-      catch
-        :exit, {:timeout, _} -> :timeout
-        :exit, _ -> :unavailable
-      end
-    else
-      :unavailable
+    case ensure_server_available(server) do
+      :ok ->
+        do_snapshot(server, timeout)
+
+      :unavailable ->
+        :unavailable
     end
   end
+
+  defp do_snapshot(server, timeout) do
+    try do
+      GenServer.call(server, :snapshot, timeout)
+    catch
+      :exit, {:timeout, _} -> :timeout
+      :exit, _ -> :unavailable
+    end
+  end
+
+  defp ensure_server_available(server) when is_atom(server) do
+    if Process.whereis(server), do: :ok, else: :unavailable
+  end
+
+  defp ensure_server_available(server) when is_pid(server) do
+    if Process.alive?(server), do: :ok, else: :unavailable
+  end
+
+  defp ensure_server_available(_server), do: :ok
 
   @impl true
   def handle_call(:snapshot, _from, state) do

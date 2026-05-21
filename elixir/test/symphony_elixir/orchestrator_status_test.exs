@@ -21,6 +21,33 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, :stop)
   end
 
+  test "snapshot and refresh helpers accept pid servers and handle dead pids" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      poll_interval_ms: 30_000
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    {:ok, pid} =
+      Orchestrator.start_link(name: Module.concat(__MODULE__, :PidAddressableOrchestrator))
+
+    try do
+      assert %{running: [], retrying: []} = Orchestrator.snapshot(pid, 1_000)
+      assert %{queued: true, operations: ["poll", "reconcile"]} = Orchestrator.request_refresh(pid)
+
+      GenServer.stop(pid)
+      refute Process.alive?(pid)
+
+      assert :unavailable = Orchestrator.snapshot(pid, 1_000)
+      assert :unavailable = Orchestrator.request_refresh(pid)
+    after
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end
+  end
+
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
 
